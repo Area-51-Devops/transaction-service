@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 require('dotenv').config();
 
 const express = require('express');
@@ -234,7 +234,7 @@ async function init() {
     const p = mysql.createPool({
       host:              process.env.DB_HOST || 'mysql',
       user:              process.env.DB_USER || 'root',
-      password:          process.env.DB_PASS || 'rootpassword',
+      password:          process.env.DB_PASS,
       database:          process.env.DB_NAME || 'banking_db',
       waitForConnections: true,
       connectionLimit:   15,
