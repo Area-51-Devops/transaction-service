@@ -2,22 +2,22 @@
 require('dotenv').config();
 
 const express = require('express');
-const cors    = require('cors');
-const mysql   = require('mysql2/promise');
-const amqp    = require('amqplib');
+const cors = require('cors');
+const mysql = require('mysql2/promise');
+const amqp = require('amqplib');
 const { v4: uuidv4 } = require('uuid');
 
-const { logger }              = require('@area-51-devops/shared');
-const { requestIdMiddleware }  = require('@area-51-devops/shared');
+const { logger } = require('@area-51-devops/shared');
+const { requestIdMiddleware } = require('@area-51-devops/shared');
 const { errorMiddleware, createError } = require('@area-51-devops/shared');
-const { createHttpClient }     = require('@area-51-devops/shared');
+const { createHttpClient } = require('@area-51-devops/shared');
 const { authMiddleware, adminMiddleware } = require('@area-51-devops/shared');
 
-const PORT         = process.env.PORT            || 3003;
-const ACCOUNT_SVC  = process.env.ACCOUNT_SVC_URL || 'http://account-service:3002';
-const CONFIG_SVC   = process.env.CONFIG_SVC_URL  || 'http://config-service:3008';
-const MQ_URL       = process.env.MQ_URL          || 'amqp://rabbitmq';
-const EXCHANGE     = 'banking_events';
+const PORT = process.env.PORT || 3003;
+const ACCOUNT_SVC = process.env.ACCOUNT_SVC_URL || 'http://account-service:3002';
+const CONFIG_SVC = process.env.CONFIG_SVC_URL || 'http://config-service:3008';
+const MQ_URL = process.env.MQ_URL || 'amqp://rabbitmq';
+const EXCHANGE = 'banking_events';
 
 // Default fraud threshold (INR) used when config-service is unavailable
 const DEFAULT_FRAUD_THRESHOLD = 500000; // â‚¹5,00,000
@@ -25,13 +25,13 @@ const DEFAULT_FRAUD_THRESHOLD = 500000; // â‚¹5,00,000
 let pool;
 let mqChannel;
 let fraudThreshold = DEFAULT_FRAUD_THRESHOLD;  // in-memory cache
-let isStarted      = false;
+let isStarted = false;
 
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // HTTP clients (safe retry only)
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const accountClient = createHttpClient(ACCOUNT_SVC);
-const configClient  = createHttpClient(CONFIG_SVC);
+const configClient = createHttpClient(CONFIG_SVC);
 
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Exponential backoff connector
@@ -57,7 +57,7 @@ async function connectWithRetry(connectFn, name, maxRetries = 10) {
 async function refreshFraudThreshold() {
   try {
     const { data } = await configClient.get('/config/fraudThresholdInr');
-    if (data && data.value !== undefined) {
+    if (data?.value !== undefined) {
       fraudThreshold = Number(data.value);
       logger.info({ fraudThreshold }, 'Fraud threshold refreshed from config-service');
     }
@@ -105,8 +105,8 @@ async function startOutboxPoller() {
             [event.id]
           );
           logger.info({ eventId: event.id, eventType: event.event_type }, 'Outbox event published');
-        } catch (pubErr) {
-          logger.error({ eventId: event.id, err: pubErr.message }, 'Failed to publish outbox event');
+        } catch (error_) {
+          logger.error({ eventId: event.id, err: error_.message }, 'Failed to publish outbox event');
           await conn2.execute(
             "UPDATE outbox_events SET status='FAILED', retry_count=retry_count+1, updated_at=NOW() WHERE id=?",
             [event.id]
@@ -117,7 +117,7 @@ async function startOutboxPoller() {
       }
     } catch (err) {
       logger.error({ err: err.message }, 'Outbox poller error');
-      try { await conn.rollback(); } catch (_) {}
+      try { await conn.rollback(); } catch (rollbackErr) { logger.warn({ err: rollbackErr.message }, 'Outbox poller rollback failed'); }
       conn.release();
     }
   }, 5000); // every 5 seconds
@@ -161,13 +161,13 @@ async function startSagaRecoveryPoller() {
             { headers: { 'idempotency-key': compensationKey } }
           );
           logger.info({ txId: tx.id }, 'Compensation credit issued successfully');
-        } catch (creditErr) {
-          logger.error({ txId: tx.id, err: creditErr.message }, 'Compensation credit failed, will retry on next poll');
+        } catch (error_) {
+          logger.error({ txId: tx.id, err: error_.message }, 'Compensation credit failed, will retry on next poll');
         }
       }
     } catch (err) {
       logger.error({ err: err.message }, 'Saga recovery poller error');
-      try { await conn.rollback(); } catch (_) {}
+      try { await conn.rollback(); } catch (rollbackErr) { logger.warn({ err: rollbackErr.message }, 'Saga recovery rollback failed'); }
       conn.release();
     }
   }, 30000); // every 30 seconds
@@ -196,7 +196,7 @@ async function startFraudEventConsumer(channel) {
             { amount: event.amount },
             { headers: { 'idempotency-key': `credit:fraud:${transactionId}:${event.toAccountId}` } }
           );
-          
+
           await conn.execute(
             "UPDATE transactions SET saga_state='SUCCESS', status='SUCCESS', updated_at=NOW() WHERE id=?",
             [transactionId]
@@ -232,13 +232,13 @@ async function startFraudEventConsumer(channel) {
 async function init() {
   pool = await connectWithRetry(async () => {
     const p = mysql.createPool({
-      host:              process.env.DB_HOST || 'mysql',
-      user:              process.env.DB_USER || 'root',
-      password:          process.env.DB_PASS,
-      database:          process.env.DB_NAME || 'banking_db',
+      host: process.env.DB_HOST || 'mysql',
+      user: process.env.DB_USER || 'root',
+      password: process.env.DB_PASS || 'rootpassword',
+      database: process.env.DB_NAME || 'banking_db',
       waitForConnections: true,
-      connectionLimit:   15,
-      queueLimit:        0
+      connectionLimit: 15,
+      queueLimit: 0
     });
     await p.execute('SELECT 1');
     return p;
@@ -291,7 +291,7 @@ app.get('/health', (req, res) => res.json({ status: 'UP', service: 'transaction-
 // â”€â”€ Transfer (Saga Orchestrator) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 app.post('/transfer', async (req, res, next) => {
   const { fromAccountId, toAccountId, amount } = req.body;
-  const idemKey   = req.headers['idempotency-key'];
+  const idemKey = req.headers['idempotency-key'];
   const requestId = req.requestId;
   const log = logger.child({ requestId, endpoint: 'transfer' });
 
@@ -445,7 +445,7 @@ app.post('/transfer', async (req, res, next) => {
     res.json(response);
   } catch (err) {
     if (conn) {
-      try { await conn.rollback(); } catch (_) {}
+      try { await conn.rollback(); } catch (_) { }
       conn.release();
     }
     if (txId) {
@@ -493,7 +493,7 @@ app.get('/transactions/flagged', authMiddleware, adminMiddleware, async (req, re
       [String(limit), String(offset)]
     );
     const [countRes] = await pool.execute("SELECT COUNT(*) as total FROM transactions WHERE status='FLAGGED'");
-    
+
     res.json({
       success: true,
       transactions,
@@ -521,13 +521,13 @@ app.patch('/transactions/:id/fraud-status', authMiddleware, adminMiddleware, asy
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
-    
+
     const [rows] = await conn.execute(
       "SELECT * FROM transactions WHERE id=? FOR UPDATE SKIP LOCKED", [txId]
     );
-    if (rows.length === 0) { 
-      await conn.rollback(); 
-      return next(createError(404, 'TX_NOT_FOUND', 'Transaction not found or locked')); 
+    if (rows.length === 0) {
+      await conn.rollback();
+      return next(createError(404, 'TX_NOT_FOUND', 'Transaction not found or locked'));
     }
 
     const tx = rows[0];
@@ -535,16 +535,16 @@ app.patch('/transactions/:id/fraud-status', authMiddleware, adminMiddleware, asy
       await conn.rollback();
       return next(createError(400, 'INVALID_STATE', `Transaction is ${tx.status}, not FLAGGED`));
     }
-    
+
     const eventType = status === 'APPROVED' ? 'FraudApproved' : 'FraudRejected';
-    
+
     const [accRows] = await conn.execute('SELECT user_id FROM accounts WHERE id=?', [tx.from_account_id]);
     const senderUserId = accRows.length > 0 ? accRows[0].user_id : tx.from_account_id;
 
-    const payload = JSON.stringify({ 
-      transactionId: txId, 
-      decision: status, 
-      amount: tx.amount, 
+    const payload = JSON.stringify({
+      transactionId: txId,
+      decision: status,
+      amount: tx.amount,
       processedAt: new Date().toISOString(),
       userId: senderUserId,
       fromAccountId: tx.from_account_id,
@@ -588,23 +588,23 @@ async function shutdown(signal) {
   logger.info({ signal }, 'Graceful shutdown initiated');
   server.close(async () => {
     try {
-      if (typeof pool !== 'undefined' && pool) await pool.end().catch(() => {});
-      if (typeof redisClient !== 'undefined' && redisClient) await redisClient.quit().catch(() => {});
+      if (typeof pool !== 'undefined' && pool) await pool.end().catch(() => { });
+      if (typeof redisClient !== 'undefined' && redisClient) await redisClient.quit().catch(() => { });
     } catch (err) {
       logger.error({ err }, 'Error during graceful shutdown connections close');
     }
     logger.info('Shutdown complete');
     process.exit(0);
   });
-  
-  setTimeout(() => { 
-    logger.error('Force shutdown timeout'); 
-    process.exit(1); 
+
+  setTimeout(() => {
+    logger.error('Force shutdown timeout');
+    process.exit(1);
   }, 15000);
 }
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT',  () => shutdown('SIGINT'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 init().catch(err => {
   logger.fatal({ err }, 'transaction-service failed to initialise');
