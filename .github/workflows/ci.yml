@@ -19,7 +19,7 @@ jobs:
       packages: read
     with:
       working_directory: "services/transaction-service"
-      image_name: "services/transaction-service"
+      image_name: "area51devops/transaction-service"
       service-name: "transaction-service"
       docker_context: "services"
       dockerfile_path: "transaction-service/Dockerfile"
